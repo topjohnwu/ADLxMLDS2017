@@ -3,6 +3,7 @@
 import sys
 import numpy as np
 import tensorflow as tf
+import random
 
 # Consts
 train_frames = 1124823
@@ -24,6 +25,7 @@ data_dir = sys.argv[2]
 model_name = sys.argv[3]
 
 metadata = []
+slots = []
 label_dic = {}
 o2o_map = {}
 num_39_map = {}
@@ -55,23 +57,20 @@ train_step = tf.train.AdamOptimizer(learning_rate).minimize(total_loss)
 saver = tf.train.Saver()
 
 def gen_train_slot():
-	for sentence in metadata:
-		for frame in range(0, len(sentence) - num_steps + 1):
-			slot_x = [data_fbank[n[1]] for n in sentence[frame:frame + num_steps]]
-			slot_y = [o2o_map[n[2]][0] for n in sentence[frame:frame + num_steps]]
-			yield((slot_x, slot_y))
+	random.shuffle(slots)
+
+	for slot in slots:
+		slot_x = [data_fbank[n[1]] for n in metadata[slot[0]][slot[1]:slot[1] + num_steps]]
+		slot_y = [o2o_map[n[2]][0] for n in metadata[slot[0]][slot[1]:slot[1] + num_steps]]
+		yield((slot_x, slot_y))
 
 def gen_train_batch():
 	idx = 0
 	data_x = np.empty([batch_size, num_steps, fbank_dim], dtype=np.float32)
 	data_y = np.empty([batch_size, num_steps], dtype=np.int32)
-	# Calc total slots
-	slots = 0
-	for sentence in metadata:
-		slots += (len(sentence) - num_steps + 1)
-	print('Total availible slots=[{}]'.format(slots))
+	print('Total availible slots=[{}]'.format(len(slots)))
 	slot_generator = gen_train_slot()
-	for _ in range(0, slots // batch_size):
+	for _ in range(0, len(slots) // batch_size):
 		for i in range(0, batch_size):
 			data_x[i], data_y[i] = next(slot_generator)
 		yield((data_x, data_y))
@@ -163,6 +162,10 @@ if train:
 			data_fbank[idx] = arr[1:]
 		metadata.append(sentence)
 
+	# Gen slot list
+	for idx, sentence in enumerate(metadata):
+		slots.extend([[idx, x] for x in range(len(sentence) - num_steps + 1)])
+
 	# Train
 	with tf.Session() as sess:
 		sess.run(tf.global_variables_initializer())
@@ -199,7 +202,6 @@ else:
 		saver.restore(sess, 'models/{}'.format(model_name))
 		for sentence in metadata:
 			sen_len = len(sentence)
-			# print('{} [{}]'.format(sentence[0][0][:sentence[0][0].rfind('_')], sen_len))
 			num_list = []
 			for X in gen_test_batch(sentence):
 				pred = sess.run(last_label, feed_dict={x:X})
