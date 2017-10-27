@@ -14,15 +14,24 @@ phone_num = 48
 
 # Params
 num_steps = 20
-batch_size = 500
 state_size = 100
 learning_rate = 0.001
 num_epochs = 20
-layers = 3
+rnn_layers = 3
 
+# CNN params
+cnn_kernel_size = 3
+cnn_filter_num = [32, 64]
+fc_out_num = [1024, phone_num]
+prob = 0.9
+
+
+# User inputs
 train = sys.argv[1] == 'train'
-data_dir = sys.argv[2]
-model_name = sys.argv[3]
+CNN = sys.argv[2] == 'cnn'
+batch_size = int(sys.argv[3])
+data_dir = sys.argv[4]
+model_name = sys.argv[5]
 
 metadata = []
 slots = []
@@ -33,11 +42,52 @@ num_39_map = {}
 # placeholders
 x = tf.placeholder(tf.float32, [batch_size, num_steps, fbank_dim], name='input')
 y = tf.placeholder(tf.int32, [batch_size, num_steps], name='labels')
-init_state = tf.zeros([batch_size, state_size], dtype=tf.float32)
+keep_prob = tf.placeholder(tf.float32, name='keep_prob')
+
+if CNN:
+	# Construct CNN
+	conv_x = tf.pad(tf.expand_dims(x, axis=3), [[0, 0], [1, 1], [0, 0], [0, 0]], 'SYMMETRIC')
+	cnn_list = []
+
+	for i in range(1, num_steps + 1):
+		sliced = conv_x[:, i - 1:i + 2, :]
+
+		# CNN 1
+		w_conv1 = tf.Variable(tf.truncated_normal([cnn_kernel_size, cnn_kernel_size, 1, cnn_filter_num[0]], stddev=0.1))
+		b_conv1 = tf.Variable(tf.constant(0.1, shape=[cnn_filter_num[0]]))
+		conv1 = tf.nn.relu(tf.nn.conv2d(sliced, w_conv1, strides=[1, 1, 1, 1], padding='SAME') + b_conv1)
+		pool1 = tf.nn.max_pool(conv1, ksize=[1, 2, 2, 1], strides=[1, 1, 2, 1], padding='SAME')
+
+		# CNN 2
+		# w_conv2 = tf.truncated_normal([cnn_kernel_size, cnn_kernel_size, cnn_filter_num[0], cnn_filter_num[1]], stddev=0.1)
+		# b_conv2 = tf.constant(0.1, shape=[cnn_filter_num[1]])
+		# conv2 = tf.nn.relu(tf.nn.conv2d(pool1, w_conv2, strides=[1, 1, 1, 1], padding='SAME') + b_conv2)
+		# pool2 = tf.nn.max_pool(conv2, ksize=[1, 2, 2, 1], strides=[1, 1, 2, 1], padding='SAME')
+
+		flat_dim = int(np.prod(pool1.shape[1:]))
+		flatten = tf.reshape(pool1, [-1, flat_dim])
+
+		# FC 1
+		w_fc1 = tf.Variable(tf.truncated_normal([flat_dim, fc_out_num[0]], stddev=0.1))
+		b_fc1 = tf.Variable(tf.constant(0.1, shape=[fc_out_num[0]]))
+		fc1 = tf.nn.relu(tf.matmul(flatten, w_fc1) + b_fc1)
+		fc1_drop = tf.nn.dropout(fc1, keep_prob)
+
+		# FC 2
+		w_fc2 = tf.Variable(tf.truncated_normal([fc_out_num[0], fc_out_num[1]], stddev=0.1))
+		b_fc2 = tf.Variable(tf.constant(0.1, shape=[fc_out_num[1]]))
+		fc2 = tf.nn.relu(tf.matmul(fc1_drop, w_fc2) + b_fc2)
+		fc2_drop = tf.nn.dropout(fc2, keep_prob)
+
+		cnn_list.append(fc2_drop)
+
+	rnn_input = tf.stack(cnn_list, axis=1)
+else:
+	rnn_input = x
 
 # cell
-cell = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.LSTMCell(state_size, state_is_tuple=True) for i in range(layers)], state_is_tuple=True)
-rnn_outputs, final_state = tf.nn.dynamic_rnn(cell, x, dtype=tf.float32)
+cell = tf.contrib.rnn.MultiRNNCell([tf.contrib.rnn.LSTMCell(state_size, state_is_tuple=True) for i in range(rnn_layers)], state_is_tuple=True)
+rnn_outputs, final_state = tf.nn.dynamic_rnn(cell, rnn_input, dtype=tf.float32)
 
 # logits and predictions
 with tf.variable_scope('softmax'):
@@ -68,7 +118,6 @@ def gen_train_batch():
 	idx = 0
 	data_x = np.empty([batch_size, num_steps, fbank_dim], dtype=np.float32)
 	data_y = np.empty([batch_size, num_steps], dtype=np.int32)
-	print('Total availible slots=[{}]'.format(len(slots)))
 	slot_generator = gen_train_slot()
 	for _ in range(0, len(slots) // batch_size):
 		for i in range(0, batch_size):
@@ -168,11 +217,12 @@ if train:
 
 	# Train
 	with tf.Session() as sess:
+		# saver.restore(sess, 'models/{}'.format(model_name))
 		sess.run(tf.global_variables_initializer())
 		for idx, epoch in enumerate(gen_train_epochs()):
 			print('')
 			for step, (X, Y) in enumerate(epoch):
-				_ , acc = sess.run([train_step, accuracy], feed_dict={x:X, y:Y})
+				_ , acc = sess.run([train_step, accuracy], feed_dict={x:X, y:Y, keep_prob:prob})
 				print('epoch=[{}] step=[{}] acc=[{}]'.format(idx, step, acc))
 			# Save each epoch
 			save_path = saver.save(sess, 'models/{}'.format(model_name))
@@ -194,7 +244,7 @@ else:
 			data_fbank[idx] = arr[1:]
 		metadata.append(sentence)
 
-	csv = open(sys.argv[4], 'w')
+	csv = open(sys.argv[6], 'w')
 	csv.write('id,phone_sequence\n')
 
 	# Test
@@ -204,9 +254,12 @@ else:
 			sen_len = len(sentence)
 			num_list = []
 			for X in gen_test_batch(sentence):
-				pred = sess.run(last_label, feed_dict={x:X})
-				num_list.extend(pred[:sen_len])
-				sen_len -= len(num_list)
-			csv.write(','.join((sentence[0][0][:sentence[0][0].rfind('_')], get_output(num_list))))
+				pred = sess.run(last_label, feed_dict={x:X, keep_prob:prob})
+				new_list = pred[:sen_len]
+				num_list.extend(new_list)
+				sen_len -= len(new_list)
+			s = ','.join((sentence[0][0][:sentence[0][0].rfind('_')], get_output(num_list)))
+			print(s)
+			csv.write(s)
 			csv.write('\n')
 	csv.close()
