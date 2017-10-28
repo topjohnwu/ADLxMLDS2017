@@ -177,7 +177,7 @@ def get_output(num_list, consec_thold = 3):
 	return ''.join(trimmed)
 
 # Read mapping
-with open('{}/phones/48phone_char.map'.format(data_dir), 'r') as mappings:
+with open('{}/48phone_char.map'.format(data_dir), 'r') as mappings:
 	for line in mappings:
 		arr = line.strip('\n\r').split('\t')
 		o2o_map[arr[0]] = (arr[1], arr[2])

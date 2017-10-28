@@ -1,2 +1,6 @@
 #!/usr/bin/env bash
-python3 run.py test rnn 500 "$1" rnn_suffle.ckpt "$2"
+if [ ! -d models ]; then
+	mkdir models
+	curl -L https://www.dropbox.com/s/1ojzxc41dmiinhk/models.tgz?dl=1 | tar zxf - -C models
+fi
+python run.py test rnn 500 "$1" rnn.ckpt "$2"

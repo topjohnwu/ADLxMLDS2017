@@ -1,2 +1,0 @@
-model_checkpoint_path: "rnn_suffle.ckpt"
-all_model_checkpoint_paths: "rnn_suffle.ckpt"
