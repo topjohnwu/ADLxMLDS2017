@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import sys
 import json
 import numpy as np
@@ -13,14 +14,18 @@ hidden_dim = 256
 frame_step = 80
 caption_step = 40
 learning_rate = 0.001
-num_epoch = 100
+num_epoch = 6
 word_count_threshold = 3
+
+use_attention = False
 
 # User inputs
 mode = sys.argv[1]
-data_dir = sys.argv[2]
+model_name = sys.argv[2]
+model_dir = os.path.join('models', model_name)
+data_dir = sys.argv[3]
 
-model_name = 'special'
+os.makedirs(model_dir, exist_ok=True)
 
 # Global data
 word_counts = {}
@@ -75,13 +80,16 @@ def build_model():
 		dec_W = tf.get_variable('W', [hidden_dim, vocab_size], initializer=tf.random_uniform_initializer(-0.1, 0.1))
 		dec_b = tf.Variable(b_init.astype(np.float32), name='b')
 
+	with tf.variable_scope('attention'):
+		att_W = tf.get_variable('W', [hidden_dim, hidden_dim], initializer=tf.random_uniform_initializer(-0.1, 0.1))
+
 	lstm1 = tf.nn.rnn_cell.BasicLSTMCell(hidden_dim, state_is_tuple=True)
 	lstm2 = tf.nn.rnn_cell.BasicLSTMCell(hidden_dim, state_is_tuple=True)
 
-	return emb_W, enc_W, enc_b, dec_W, dec_b, lstm1, lstm2
+	return emb_W, enc_W, enc_b, dec_W, dec_b, lstm1, lstm2, att_W
 
 def build_train_model():
-	emb_W, enc_W, enc_b, dec_W, dec_b, lstm1, lstm2 = build_model()
+	emb_W, enc_W, enc_b, dec_W, dec_b, lstm1, lstm2, att_W = build_model()
 
 	video = tf.placeholder(tf.float32, [batch_size, frame_step, feat_dim], name='video')
 	caption = tf.placeholder(tf.int32, [batch_size, caption_step + 1], name='caption')
@@ -95,8 +103,8 @@ def build_train_model():
 	state2 = list(map(lambda x : tf.zeros([batch_size, x]), lstm2.state_size))
 	padding = tf.zeros([batch_size, hidden_dim])
 
-	probs = []
 	loss = 0.0
+	enc_outputs = []
 
 	with tf.variable_scope(tf.get_variable_scope()) as scope:
 		for i in range(0, frame_step):
@@ -106,8 +114,12 @@ def build_train_model():
 			with tf.variable_scope("LSTM1"):
 				output1, state1 = lstm1(image_emb[:,i,:], state1)
 
+			enc_outputs.append(output1)
+
 			with tf.variable_scope("LSTM2"):
 				output2, state2 = lstm2(tf.concat([padding, output1], axis=1), state2)
+
+		enc_outputs = tf.convert_to_tensor(enc_outputs)
 
 		for i in range(0, caption_step):
 			current_embed = tf.nn.embedding_lookup(emb_W, caption[:, i])
@@ -117,32 +129,39 @@ def build_train_model():
 			with tf.variable_scope("LSTM1"):
 				output1, state1 = lstm1(padding, state1)
 
+			if use_attention:
+				weighted_output1 = []
+				for j in range(batch_size):
+					ctx = enc_outputs[:, j, :] @ att_W @ tf.expand_dims(output1[j, :], axis=1)
+					ctx = tf.nn.softmax(tf.squeeze(ctx))
+					ctx = tf.reshape(ctx, [1, -1])
+					weighted_output1.append(tf.squeeze(ctx @ enc_outputs[:, j, :]))
+			else:
+				weighted_output1 = output1
+
 			with tf.variable_scope("LSTM2"):
-				output2, state2 = lstm2(tf.concat([current_embed, output1], axis=1), state2)
+				output2, state2 = lstm2(tf.concat([current_embed, weighted_output1], axis=1), state2)
 
 			labels = tf.expand_dims(caption[:, i + 1], axis=1)
 			indices = tf.expand_dims(tf.range(0, batch_size), axis=1)
 			concated = tf.concat([indices, labels], axis=1)
-			onehot_labels = tf.sparse_to_dense(concated, tf.stack([batch_size, vocab_size]), 1.0, 0.0)
+			onehot_labels = tf.sparse_to_dense(concated, [batch_size, vocab_size], 1.0, 0.0)
 
 			logit_words = tf.nn.xw_plus_b(output2, dec_W, dec_b)
 			cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits=logit_words, labels=onehot_labels)
 			cross_entropy = cross_entropy * caption_mask[:, i]
-			probs.append(logit_words)
 
 			current_loss = tf.reduce_sum(cross_entropy) / batch_size
 			loss += current_loss
 
 	opt = tf.train.AdamOptimizer(learning_rate).minimize(loss)
 
-	return video, caption, caption_mask, probs, loss, opt
+	return video, caption, caption_mask, loss, opt
 
 def build_test_model():
-	emb_W, enc_W, enc_b, dec_W, dec_b, lstm1, lstm2 = build_model()
+	emb_W, enc_W, enc_b, dec_W, dec_b, lstm1, lstm2, att_W = build_model()
 
 	video = tf.placeholder(tf.float32, [frame_step, feat_dim], name='video')
-	# video_t = tf.expand_dims(video, axis=1)
-	# video_mask = tf.placeholder(tf.float32, [1, frame_step])
 
 	video_flat = tf.reshape(video, [-1, feat_dim])
 	image_emb = tf.nn.xw_plus_b(video_flat, enc_W, enc_b)
@@ -153,9 +172,7 @@ def build_test_model():
 	padding = tf.zeros([1, hidden_dim])
 
 	generated_word_index = []
-
-	# probs = []
-	# embeds = []
+	enc_outputs = []
 
 	with tf.variable_scope(tf.get_variable_scope()) as scope:
 		for i in range(0, frame_step):
@@ -165,8 +182,12 @@ def build_test_model():
 			with tf.variable_scope("LSTM1"):
 				output1, state1 = lstm1(image_emb[:, i, :], state1)
 
+			enc_outputs.append(output1)
+
 			with tf.variable_scope("LSTM2"):
 				output2, state2 = lstm2(tf.concat([padding, output1], axis=1), state2)
+
+		enc_outputs = tf.convert_to_tensor(enc_outputs)
 
 		for i in range(0, caption_step):
 			scope.reuse_variables()
@@ -177,18 +198,24 @@ def build_test_model():
 			with tf.variable_scope("LSTM1"):
 				output1, state1 = lstm1(padding, state1)
 
+			if use_attention:
+				weighted_output1 = []
+				ctx = enc_outputs[:, 0, :] @ att_W @ tf.expand_dims(output1[0, :], axis=1)
+				ctx = tf.nn.softmax(tf.squeeze(ctx))
+				ctx = tf.reshape(ctx, [1, -1])
+				weighted_output1.append(tf.squeeze(ctx @ enc_outputs[:, 0, :]))
+			else:
+				weighted_output1 = output1
+
 			with tf.variable_scope("LSTM2"):
-				output2, state2 = lstm2(tf.concat([current_embed, output1], axis=1), state2)
+				output2, state2 = lstm2(tf.concat([current_embed, weighted_output1], axis=1), state2)
 
 			logit_words = tf.nn.xw_plus_b( output2, dec_W, dec_b)
 			word_idx = tf.argmax(logit_words, 1)[0]
 			generated_word_index.append(word_idx)
-			# probs.append(logit_words)
 
 			current_embed = tf.nn.embedding_lookup(emb_W, word_idx)
 			current_embed = tf.expand_dims(current_embed, 0)
-
-			# embeds.append(current_embed)
 
 		return video, generated_word_index
 
@@ -219,13 +246,13 @@ def train():
 	b_init -= np.max(b_init) # shift to nice numeric range
 
 	# Dump saved
-	np.save('models/i2w.npy', i2w)
-	np.save('models/w2i.npy', w2i)
-	np.save('models/b_init.npy', b_init)
+	np.save('{}/i2w.npy'.format(model_dir), i2w)
+	np.save('{}/w2i.npy'.format(model_dir), w2i)
+	np.save('{}/b_init.npy'.format(model_dir), b_init)
 
 	vocab_size = len(i2w)
 
-	tf_video, tf_caption, tf_caption_mask, tf_probs, tf_loss, tf_opt = build_train_model()
+	tf_video, tf_caption, tf_caption_mask, tf_loss, tf_opt = build_train_model()
 	sess = tf.InteractiveSession()
 	saver = tf.train.Saver()
 
@@ -249,17 +276,15 @@ def train():
 			_, loss_val = sess.run([tf_opt, tf_loss],feed_dict={ tf_video: batch_feats, tf_caption: batch_captions_idx, tf_caption_mask: batch_caption_masks})
 			print("epoch=[{}] idx=[{}] loss=[{}]".format(epoch, idx, loss_val))
 
-		saver.save(sess, 'models/{}'.format(model_name))
+		saver.save(sess, '{}/model'.format(model_dir))
 
 def test(file_list = None):
 	global i2w, w2i, b_init, vocab_size
 
-	special = ['klteYv1Uv9A_27_33.avi', '5YJaS2Eswg0_22_26.avi', 'UbmZAe5u5FI_132_141.avi', 'JntMAcTlOF0_50_70.avi', 'tJHUH9tpqPg_113_118.avi']
-
 	# Load saved
-	i2w = np.load('models/i2w.npy').tolist()
-	w2i = np.load('models/w2i.npy')
-	b_init = np.load('models/b_init.npy')
+	i2w = np.load('{}/i2w.npy'.format(model_dir)).tolist()
+	w2i = np.load('{}/w2i.npy'.format(model_dir))
+	b_init = np.load('{}/b_init.npy'.format(model_dir))
 
 	vocab_size = len(i2w)
 
@@ -267,12 +292,12 @@ def test(file_list = None):
 	sess = tf.InteractiveSession()
 	saver = tf.train.Saver()
 
-	saver.restore(sess, 'models/{}'.format(model_name))
+	saver.restore(sess, '{}/model'.format(model_dir))
 
 	if file_list == None:
 		file_list = test_feat
 
-	outfile = open(sys.argv[3], 'w')
+	outfile = open(sys.argv[4], 'w')
 
 	for id in file_list:
 		generated_word_index = sess.run(tf_caption, feed_dict={ tf_video: test_feat[id] })
