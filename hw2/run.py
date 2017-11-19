@@ -36,6 +36,7 @@ train_labs = []
 test_labs = []
 train_feat = {}
 test_feat = {}
+peer_feat = {}
 
 def process_str(str):
 	return str.lower().replace('.', '').replace(',', '').replace('!', '').replace('?', '').replace('"', '').replace('\'', '').replace('\\', '').replace('/', '').strip().split()
@@ -62,6 +63,11 @@ def load_data():
 				test_labs.append((id, sentence))
 				for word in sentence:
 					word_counts[word] = word_counts.get(word, 0) + 1
+
+	with open('{}/peer_review_id.txt'.format(data_dir), 'r') as labs:
+		for vid in labs:
+			id = vid.replace('\n', '')
+			peer_feat[id] = np.load('{}/peer_review/feat/{}.npy'.format(data_dir, id))
 
 	word_counts['<pad>'] = len(train_labs)
 	word_counts['<bos>'] = len(train_labs)
@@ -278,7 +284,7 @@ def train():
 
 		saver.save(sess, '{}/model'.format(model_dir))
 
-def test(file_list = None):
+def test(feature = test_feat):
 	global i2w, w2i, b_init, vocab_size
 
 	# Load saved
@@ -294,13 +300,10 @@ def test(file_list = None):
 
 	saver.restore(sess, '{}/model'.format(model_dir))
 
-	if file_list == None:
-		file_list = test_feat
-
 	outfile = open(sys.argv[4], 'w')
 
-	for id in file_list:
-		generated_word_index = sess.run(tf_caption, feed_dict={ tf_video: test_feat[id] })
+	for id in feature:
+		generated_word_index = sess.run(tf_caption, feed_dict={ tf_video: feature[id] })
 		generated_words = [ i2w[i] for i in generated_word_index ]
 		idx = generated_words.index('<eos>')
 		sentence = ' '.join([ w for w in generated_words[:idx] if w != '<unk>' ])
@@ -316,6 +319,6 @@ load_data()
 if mode == 'train':
 	train()
 elif mode == 'test':
-	test()
+	test(test_feat)
 else:
-	test(['klteYv1Uv9A_27_33.avi', '5YJaS2Eswg0_22_26.avi', 'UbmZAe5u5FI_132_141.avi', 'JntMAcTlOF0_50_70.avi', 'tJHUH9tpqPg_113_118.avi'])
+	test(peer_feat)
