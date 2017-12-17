@@ -74,8 +74,7 @@ class Agent_PG(Agent):
 		if args.test_pg:
 			#you can load your model here
 			print('loading trained model')
-			save_dir = 'pg_models'
-			self.saver.restore(self.sess, 'pg_models/pong.ckpt-8500')
+			self.saver.restore(self.sess, 'models/pong.ckpt')
 			# self.saver.restore(self.sess, tf.train.latest_checkpoint(save_dir))
 
 		##################

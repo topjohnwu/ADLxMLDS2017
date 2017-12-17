@@ -5,8 +5,6 @@ import pickle
 import sys
 import os
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-
 def conv2d_layer(input_tensor, filter_shape, strides, name, collections, padding='SAME', activation=tf.nn.relu):
 	with tf.variable_scope(name):
 		filters = tf.get_variable('filters', filter_shape, dtype=tf.float32, collections=collections)
@@ -33,6 +31,8 @@ class Agent_DQN(Agent):
 		"""
 
 		super(Agent_DQN,self).__init__(env)
+
+		tf.reset_default_graph()
 
 		self.n_actions = env.action_space.n
 		self.learning_rate = 0.0001
@@ -104,9 +104,11 @@ class Agent_DQN(Agent):
 			#you can load your model here
 			print('loading trained model')
 			# self.saver.restore(self.sess, tf.train.latest_checkpoint('dqn_models'))
-			self.saver.restore(self.sess, 'dqn_models/breakout.ckpt-4300000')
-			with open('dqn_models/records.pkl', 'rb') as records:
-				_, self.learn_step_count, self.epsilon, _ = pickle.load(records)
+			# self.saver.restore(self.sess, 'dqn_models/breakout.ckpt-4000000')
+			self.saver.restore(self.sess, 'models/breakout.ckpt')
+			self.epsilon = self.epsilon_min
+			# with open('dqn_models/records.pkl', 'rb') as records:
+			# 	_, self.learn_step_count, self.epsilon, _ = pickle.load(records)
 
 		##################
 		# YOUR CODE HERE #
