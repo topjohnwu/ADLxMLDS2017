@@ -202,7 +202,7 @@ else:
             continue
         print ("Loaded model: {}".format(load_path))
         os.makedirs(save_path, exist_ok=True)
-        for id, captions, z_noise in gen_testing_batch(txt, params):
+        for id, captions, z_noise in gen_testing_batch(sys.argv[2], params):
             gen_image = sess.run(outputs['generator'],
                 feed_dict = {
                     input_tensors['t_real_caption'] : captions,
